@@ -1,0 +1,227 @@
+---
+title: "Gompertz growthcurve model fits"
+author: "Ashley Eng"
+date: "26 March, 2023"
+output:
+  html_document: default
+---
+
+## Introduction
+
+This R script takes the measured OD600 nm readings and uses the R package Growthcurver to calculate growth statistics (intrinsic growth rate, carrying capacity, initial population size and time of the point of inflection, etc.) for each replicate up until death phase. Growthcurver fits a Gompertz growth curve to the data for each replicate. 
+
+Loading necessary packages
+```{r}
+library(stringr) #str_split_fixed()
+library(chron) # times()
+library(growthcurver) #SummarizeGrowth()
+library(tibble) # add_column()
+library(dplyr) # -one_of()
+library(ggplot2)
+```
+
+## Read in Data
+
+Read in the data of the OD600 nm readings of the isolates at a given temperature. The data frame is transformed such that the column names are Time, Temp, A1, A2, ..., H12.
+
+The original data frame includes additional information given by the plate reader. The desired data of time, temp, and OD ends 2 rows prior to "~End" so we subset the entire data frame to only include the desired data into a new data frame, plate1. plate1 is then written out as a csv file, plate1b. We will work with plate1b for the remainder of the script.
+
+```{r}
+temp20 <- read.csv(".../.../...", skip = 1)
+colnames(temp) <- temp20[1,]
+colnames(temp)[2] <- "Temp"
+
+# the data files also contain meta data that will not be used for analysis
+# subsetting the OD6900 data to a new data frame for analysis
+
+plate1 <- temp[1:(which(temp[,1]=="~End")[1]-2),]
+
+write.table(plate1, "...", sep=",") # writing out the updated file
+read.csv("...") -> plate1b # reading in the newly updated file for subsequent analyses
+
+rm(temp, temp20, plate1)
+```
+
+## Time Conversion
+
+The platereader provides time readings in d.hh:mm:ss where d is days, hh is hours, mm is minutes, and ss is seconds. Time values must be converted from d.hh:mm:ss format to minutes. 
+
+```{r}
+dot <- "\\." 
+
+str_split_fixed(plate1b$Time, dot, 2) -> data # data is a matrix with 2 columns: V1 & V2. V1 has hh:mm:ss until days begin to be counted then the values in V1 switch to the number of days that have passed. V2 has hh:mm:ss for when days begin to be counted.
+
+rm(dot)
+```
+
+Calculating the time points in minutes
+
+```{r, warning = FALSE}
+# subset the data frame data to make 3 data frames: 1. values from V1 that contain hh:mm:ss, 2. values from V1 that contain integer values (days), 3. values from V2 that contain hh:mm:ss
+
+hmsV1 <- data[1:which(data[,1] == "23:45:00"), 1]
+dayV1 <- as.numeric(data[(which(data[,1] == "23:45:00") + 1):nrow(plate1b), 1])
+hmsV2 <- data[which(data[,2] == "00:00:00"):nrow(plate1b), 2]
+
+# calculating minutes
+time1 <- 60 * 24 * as.numeric(times(hmsV1))
+time2 <- (60 * 24 * as.numeric(times(hmsV2))) + (60 * 24 * dayV1)
+timetot <- c(time1, time2)
+
+rm(hmsV1, dayV1, hmsV2, time1, time2)
+```
+
+Next, convert the single vector, timetot, to a data frame. The column name must be "time" because Growthcurver will only recognize the column as time values if and only if its name is 'time'.
+
+```{r}
+t1 <- matrix(timetot, ncol = 1, byrow = TRUE)
+t1 <- as.data.frame(t1, stringsAsFactors = FALSE)
+colnames(t1) <- "time"
+```
+
+## Formatting the data for Growthcurver
+
+Formatting column headers to be recognized by Growthcurver. The first column is 'time' and the subsequent columns contain OD600nm readings of each well (A1, A2, A3,..., H12). 
+
+Currently, plate1b has a temperature column, so a new data frame without a temperature column must be created. This will be done by binding two data frames, the time in minutes and the OD readings for each replicate, together.
+
+```{r}
+dat1 <- plate1b[,3:98] # dat1 is a subset of plate1b that only includes the OD readings of the replicates. 
+
+# Note that it's acceptable to subset plate1b using specific column numbers because the data frames will be transformed such that OD readings are always in columns 3 to 98 where columns 1 and 2 are time and temperature, respectively.
+```
+
+Binding the time data (minutes) with the OD6900nm data.
+
+```{r}
+OD1 <- cbind(t1, dat1) # cbind() can be used since data remains in consistent format and order
+rm(dat1)
+```
+
+## Trim the data
+
+Including the OD600nm readings from when the cells are in death phase may influence the growth statistics of the isolates. The data should be trimmed such that it excludes those OD600nm values (values after the maximum OD600nm).
+
+Making a list where each element is a vector containing the OD600nm readings for each well. Each vector should contain all OD600nm readings up until the maximum OD600nm. Then, applying the trim function across all vectors in list z. This creates a new list, k. Each vector in k has the same length (the length of the time vector). Next, creating a new data frame, data.trim, from the list of the trimmed data (k).
+
+```{r}
+z <- apply(OD1, 2, function(x) {x[1:which.max(x)]})
+
+# length of all vectors should be equivalent to the length of the time vector
+l <- length(z$time) 
+trim <- function(v) {
+  length(v) <- l
+  return(v)
+}
+
+k <- lapply(z, trim)
+data.trim <- as.data.frame(do.call(cbind, k))
+
+rm(z, k, trim, l)
+```
+
+## SummarizeGrowth on Trimmed Data
+
+SummarizeGrowth() from Growthcurver calculates the growth statistics for a single well. Applying SummarizeGrowth() across the data frame with trimmed data and ignoring the NA's to calculate the growth statistics for each replicate. The results will then be written out into a new data frame.
+
+```{r, warning = FALSE}
+# the function sg.trim modifies SummarizeGrowth() to ignore NA's and applied across trimmed data in two separate steps
+
+sg.trim <- function(x) {
+ SummarizeGrowth(data.trim[!is.na(x),1], x[!is.na(x)])
+}
+models.all <- lapply(data.trim[2:ncol(data.trim)], sg.trim)
+
+# modified SummarizeGrowth() is applied across trimmed data in single step
+
+models.all <- lapply(data.trim[2:ncol(data.trim)], function(x) SummarizeGrowth(data.trim[!is.na(x), 1], x[!is.na(x)])) # models from all samples are stored in models.all
+```
+
+The result of applying SummarizeGrowth() across data.trim is a list. Each element in models.all is a list containing the growth statistics, the model, and the data for a single well (time, OD600nm). The results should be in a data frame. The function below will coerce the list into a data frame.
+
+```{r}
+df_trim <- function(m) {
+  data.frame(matrix(unlist(m), nrow = length(m), byrow = T))
+  return(m)
+}
+```
+
+Creating a data frame (gc_trim1) with the growth statistics for the trimmed data (i.e. coerce models.all into a data frame). 
+
+```{r, warning = FALSE}
+# Result is a data frame with 96 rows (each row is a different replicate) and 3 columns. The first column is a list of the growth statistics.
+
+gc_trim <- suppressWarnings(lapply(models.all, df_trim))
+gc_trim <- as.data.frame(do.call(rbind, gc_trim))
+
+# Resulting data frame has all of the growth statistics for each sample
+
+gc_trim1 <- data.frame(matrix(unlist(gc_trim$vals), nrow = length(gc_trim$vals), byrow = T))
+
+colnames(gc_trim1) <- names(gc_trim$vals$A1) # Note that since each element in gc_trim$vals has the same names in the same order, it is acceptable to arbitrarily use A1 to name the columns in gc_trim1.
+
+rm(df_trim)
+```
+
+Adding a unique ID to each row and mean temperature value of the kinetic run.
+
+```{r}
+gc_trim1 <- add_column(gc_trim1, Well = names(gc_trim$vals), .before = "k")
+gc_trim1 <- add_column(gc_trim1, Temp = mean(plate1b$Temp), .after = "Well")
+```
+
+Adding the sample IDs and origin (warm or control) into gc_trim1 and writing out the file. The output file will be used to plot thermal performance curves of growth rate over temperature for each isolate.
+
+```{r, warning = FALSE, message = FALSE}
+platemap <- read.csv("/.../.../...")
+gc_trim1 <- merge(platemap, gc_trim1)
+
+# deleting the well names since they are no longer needed
+gc_trim1 <- gc_trim1 %>% dplyr::select(-one_of("Well"))
+
+# writing out the file
+write.csv(gc_trim1,".../.../...")
+```
+
+## Plotting growth curves
+
+```{r}
+# p1 is the raw data
+
+p1 <- ggplot(OD1, aes(x = time, y = B5, color = "black")) + 
+  geom_point(alpha = 0.7, size = 0.7)
+model.B5 <- SummarizeGrowth(OD1$time, OD1$B5)
+OD1.pred <- data.frame(time = OD1$time, pred.B5 = predict(model.B5$model))
+
+# plot1 is the raw data and the growth curve for the untrimmed data
+
+plot1 <- p1 + geom_line(data = OD1.pred, aes(y = pred.B5, color = "red"))
+
+# creating a new data frame with the trimmed data (B6.trim) and writing the model for the trimmed data (model1.B6)
+
+B5.trim <- data.frame(time = data.trim$time[1:which.max(OD1$B5)], B5 = data.trim$B5[1:which.max(OD1$B5)])
+model1.B5 <- models.all$B5
+trim.pred <- data.frame(time = B5.trim$time, OD = predict(model1.B5$model))
+
+# plot is plot1 (raw data and growth curve for untrimmed data) and the growth curve of the trimmed data.
+
+plot <- plot1 + 
+  geom_line(data = B5.trim, aes(y = trim.pred$OD, color = "blue"))
+
+# adding a legend
+
+plot + 
+  labs(x = "Time (minutes)", y = "Cell abundance (OD600 nm)") + 
+  scale_color_identity(name = "Legend",
+                       guide = "legend",
+                       labels = c("Raw data", "Growth curve \n for trimmed data",
+                                  "Growth curve \n for raw data")) + 
+  xlim(0, 3000) +
+  theme_bw() +
+  theme(axis.text = element_text(size = 12), 
+        axis.title = element_text(size = 15),
+        legend.position = c(.95, .05),
+        legend.justification = c("right", "bottom"),
+        legend.text = element_text(size = 11), 
+        legend.title = element_text(size = 13))
+```
