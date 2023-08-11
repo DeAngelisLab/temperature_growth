@@ -1,0 +1,253 @@
+---
+title: "Phylogenetic Analysis of Temperature Growth Traits"
+author: "Ashley Eng"
+date: "21 February, 2023"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+This script calculates phylogenetic signal and performs phylogenetic generalized least squares regression on the microbial growth traits extracted from the model-fitting.Rmd and MMRT1.5_fit.Rmd scripts.
+
+Loading necessary packages
+```{r}
+library(ape) #read.tree(), corBrownian(), drop.tip()
+library(picante) #phylosignal()
+library(phytools) #phylosig()
+library(geiger)
+library(nlme) #gls()
+library(dplyr) #filter(), row()
+library(ggplot2) #ggplot()
+library(nortest) #lillie.test()
+library(MASS) #boxcox()
+library(readxl) #read_excel()
+```
+
+Read in traits data
+
+```{r}
+ratkowsky.traits <- read.csv(".../.../...")
+MMRT1.5.params <- read_excel(".../.../...")
+```
+
+Read in Newick Tree
+
+```{r}
+text.string <- "..."
+vert.tree <- read.tree(text = text.string)
+```
+
+This chunk of code is optional. If needed, drop tree nodes.
+```{r}
+#vert.tree <- drop.tip(vert.tree, "...")
+```
+
+Arranging Ratkowsky trait data according to tip labels
+```{r}
+ratkowsky.tree <- ratkowsky.traits %>% arrange(factor(ID, levels = vert.tree$tip.label))
+```
+
+Arranging MMRT trait data according to tip labels
+```{r}
+MMRT1.5.tree <- MMRT1.5.params %>% arrange(factor(ID, levels = vert.tree$tip.label))
+```
+
+## Phylogenetic signal
+
+In addition to examining whether there is a significant difference between microbial growth traits of isolates from heated vs. control plots while accounting for phylogeny (i.e. phylogenetic comparisons), we want to evaluate whether there is a phylogenetic signal. Phylogenetic signal measures the resemblance of closely related species. We calculate Pagel's lambda as a measure of phylogenetic signal.
+
+https://lukejharmon.github.io/ilhabela/instruction/2015/06/02/ContinuousModels/
+http://blog.phytools.org/2012/03/phylogenetic-signal-with-k-and.html
+
+### Ratkowsky parameters
+Temperature sensitivity of growth (Ratkowsky parameter)
+
+```{r}
+phylosig(vert.tree.sub, ratkowsky.tree.sub$a, method = "lambda", test = T)
+```
+
+Optimum growth temperature
+```{r}
+phylosig(vert.tree, ratkowsky.tree$topt, method = "lambda", test = T)
+```
+
+Maximum growth temperature
+```{r}
+phylosig(vert.tree, ratkowsky.tree$tmax, method = "lambda", test = T)
+```
+
+### MMRT parameters
+
+Optimum growth temperature
+```{r}
+#Pagel's lambda
+phylosig(vert.tree, MMRT1.5.tree$Topt, method = "lambda", test = T)
+```
+
+Temperature inflection point
+```{r}
+phylosig(vert.tree, MMRT1.5.tree$Tinf, method = "lambda", test = T)
+```
+
+## Phylogenetic Generalized Least Squares (PGLS) for Ratkowsky traits
+
+To test of evidence of adaptation in microbial growth traits between isolates from heated and control soil plots, we will conduct phylogenetic generalized least squares (PGLS) tests
+
+https://lukejharmon.github.io/ilhabela/instruction/2015/07/03/PGLS/
+
+### Temperature sensitivity of growth (a)
+
+```{r}
+#fitting gls
+pglsmodel <- gls(a ~ origin, correlation = corBrownian(phy = vert.tree),
+    data = ratkowsky.tree.sub, method = "ML")
+anova(pglsmodel)
+summary(pglsmodel)
+```
+
+One of the assumptions of PGLS is that residuals are (near) normally distributed. We will run a Lilliefors test for normality to assess normality and plot the resulting Q-Q plot.
+```{r}
+# Lilliefors test for normality
+lillie.test(residuals(pglsmodel))
+
+# plotting Q-Q plot
+
+pgls.resid <- as.data.frame(residuals(pglsmodel))
+colnames(pgls.resid) <- ".resid"
+
+ggplot(pgls.resid, aes(sample = .resid)) + 
+  stat_qq() + 
+  stat_qq_line() +
+  xlab("Theoretical quantiles") +
+  ylab("Sample quantiles") +
+  ggtitle("Q-Q plot for Ratowsky parameter") +
+  theme_bw()
+```
+
+### Optimum growth temperature (topt)
+```{r}
+pglsmodel <- gls(topt ~ origin, correlation = corBrownian(phy = vert.tree),
+    data = ratkowsky.tree, method = "ML")
+anova(pglsmodel)
+summary(pglsmodel)
+```
+
+```{r}
+# Lilliefors test for normality
+lillie.test(residuals(pglsmodel))
+
+# plotting Q-Q plot
+
+pgls.resid <- as.data.frame(residuals(pglsmodel))
+colnames(pgls.resid) <- ".resid"
+
+ggplot(pgls.resid, aes(sample = .resid)) + 
+  stat_qq() + 
+  stat_qq_line() +
+  xlab("Theoretical quantiles") +
+  ylab("Sample quantiles") +
+  ggtitle("Q-Q plot for Ratkowsky 1983 optimum growth temperature") +
+  theme_bw()
+```
+
+### Maximum growth temperature (tmax)
+```{r}
+pglsmodel <- gls(tmax ~ origin, correlation = corBrownian(phy = vert.tree),
+    data = ratkowsky.tree, method = "ML")
+anova(pglsmodel)
+summary(pglsmodel)
+```
+
+```{r}
+# Lilliefors test for normality
+lillie.test(residuals(pglsmodel))
+
+# plotting Q-Q plot
+
+pgls.resid <- as.data.frame(residuals(pglsmodel))
+colnames(pgls.resid) <- ".resid"
+
+ggplot(pgls.resid, aes(sample = .resid)) + 
+  stat_qq() + 
+  stat_qq_line() +
+  xlab("Theoretical quantiles") +
+  ylab("Sample quantiles") +
+  ggtitle("Q-Q plot for maximum growth temperature") +
+  theme_bw()
+```
+
+## PGLS for MMRT
+#### Optimum growth tempearture (topt)
+```{r}
+pglsmodel <- gls(Topt ~ origin, correlation = corBrownian(phy = vert.tree),
+    data = MMRT1.5.tree, method = "ML")
+anova(pglsmodel)
+summary(pglsmodel)
+```
+
+```{r}
+lillie.test(residuals(pglsmodel))
+
+pgls.resid <- as.data.frame(residuals(pglsmodel))
+colnames(pgls.resid) <- ".resid"
+
+ggplot(pgls.resid, aes(sample = .resid)) + 
+  stat_qq() + 
+  stat_qq_line() +
+  xlab("Theoretical quantiles") +
+  ylab("Sample quantiles") +
+  ggtitle("Q-Q plot for modified MMRT optimum growth temperature") +
+  theme_bw()
+```
+
+#### Temperature inflection point (tinf)
+```{r}
+pglsmodel <- gls(Tinf ~ origin, correlation = corBrownian(phy = vert.tree),
+    data = MMRT1.5.tree, method = "ML")
+anova(pglsmodel)
+summary(pglsmodel)
+```
+
+```{r}
+lillie.test(residuals(pglsmodel))
+
+pgls.resid <- as.data.frame(residuals(pglsmodel))
+colnames(pgls.resid) <- ".resid"
+
+ggplot(pgls.resid, aes(sample = .resid)) + 
+  stat_qq() + 
+  stat_qq_line() +
+  xlab("Theoretical quantiles") +
+  ylab("Sample quantiles") +
+  ggtitle("Q-Q plot for modified MMRT temperature inflection point") +
+  theme_bw()
+```
+
+## Calculating group means
+### Ratkowsky extracted traits
+
+The below chunk calculates the mean and standard deviation for temperature sensitivity of growth estimated by the Ratkowsky 1983 model. The parameter of interest can be changed as needed to calculate statistics for other parameters.
+
+```{r}
+warm.ratkowsky <- ratkowsky.tree %>% filter(origin == "warm")
+control.ratkowsky <- ratkowsky.tree %>% filter(origin == "control")
+
+mean(warm.ratkowsky$a)
+sd(warm.ratkowsky$a)
+mean(warm.ratkowsky$a)
+sd(warm.ratkowsky$a)
+```
+
+### MMRT extracted traits
+
+The below chunk calculates the mean and standard deviation for optimum growth temperature estimated by the modified MMRT. The parameter of interest can be changed as needed to calculate statistics for other parameters.
+
+```{r}
+warm.MMRT1.5 <- MMRT1.5.params %>% filter(origin == "warm")
+control.MMRT1.5 <- MMRT1.5.params %>% filter(origin == "control")
+
+mean(warm.MMRT1.5$Topt)
+sd(warm.MMRT1.5$Topt)
+mean(control.MMRT1.5$Topt)
+sd(control.MMRT1.5$Topt)
+```
