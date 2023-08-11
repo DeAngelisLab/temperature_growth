@@ -1,0 +1,218 @@
+---
+title: "Ratkowsy 1983 model fitting"
+author: "Ashley Eng"
+date: "26 March, 2023"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+## Read in the summarize data
+
+Loading necessary packages
+```{r}
+library(dplyr) #bind_rows(), -one_of(), arrange(), select()
+library(devRate) #devRateModel()
+library(rTPC) #ratkowsky_1983()
+library(ggplot2) #ggplot()
+library(cowplot) #plot_grid
+library(tidyverse) #full_join()
+library(tibble) #add_column()
+```
+
+Read in the summarize data containing growth statistics for each replicate at a given temperature is read in. These files are the output of the growthcurver-alphas.Rmd.  Each row is a replicate where each column is the ID, Origin, and Temperature, followed by the growth statistics for a given replicate.
+
+```{r message = F}
+setwd(".../.../...")
+
+#reading in the summarize data using regular expressions
+dat1 <- list.files(pattern = "...", recursive = T)
+
+summ1 <- lapply(dat1, read.csv)
+
+SummData1 <- do.call(bind_rows, summ1)
+
+#binding summarize data frames for each batch of isolates, if applicable
+
+# SummData <- bind_rows(SummData1, SummData2, SummData4, SummData5, SummData6)
+SummData <- SummData[,2:19]
+```
+
+In order for the package devRate to be used, the data must be in a data frame with exactly 2 columns: temperature and growth rate, where each row is a replicate.
+
+```{r}
+drop.cols <- c("Origin", "k", "k_se", "k_p", "n0", "n0_se", "n0_p", "r_se", "r_p", "sigma", "df", "t_mid", "t_gen", "auc_l", "auc_e")
+SummData_fit <- SummData %>% dplyr::select(-one_of(drop.cols))
+SummData_fit <- SummData_fit %>% arrange(Temp)
+
+rm(drop.cols)
+```
+
+## Fitting temperature growth models by isolate
+
+The code in this section applies devRateModel() onto each isolate individually, allowing us to individually visualize the data for each isolate using devRatePlot() (not shown in code), determine outliers, and subset data that surpasses Topt, if applicable.
+
+### EXAMPLE ISOLATE
+
+We must create a new data frame with the temperature and intrinsic growth rate (devRate) for one isolate (example) by subsetting the data values from SummData_fit. The data frame must be formatted such that the first column is temperature and the second column is devRate.
+
+ratkowsky_1983() is then used to fit the Ratkowsky 1983 model onto the data. The following script for an example isolatem, but can be duplicated for other isolates as needed.
+
+```{r}
+example <- filter(SummData_fit, ID == "...") # create a dataframe of just the isolate of interest
+example_fit <- example %>% dplyr::select(-one_of("ID"))
+colnames(example_fit)[2] <- "devRate"
+
+# dropping outlier points due to experimental noise (e.g. edge effects)
+example_out <- example_fit[-c(...),]
+```
+
+```{r}
+#get start values and fit model
+start_vals <- get_start_vals(example_out$Temp, example_out$devRate, model_name = 'ratkowsky_1983')
+
+#fit model
+ratexample <- nls.multstart::nls_multstart(devRate ~ ratkowsky_1983(temp = Temp, tmin, tmax, a, b), 
+                                        data = example_out, 
+                                        iter = c(4,4,4,4),
+                                        start_lower = start_vals - 10,
+                                        start_upper = start_vals + 10,
+                                        lower = get_lower_lims(example_out$Temp, example_out$devRate,
+                                                               model_name = 'ratkowsky_1983'),
+                                        upper = get_upper_lims(example_out$Temp, example_out$devRate, model_name = 'ratkowsky_1983'), supp_errors = 'Y',convergence_count = FALSE)
+
+# look at model fit
+summary(ratexample)
+```
+
+Plotting the temperature response curve for the example isolate
+```{r}
+# get predictions
+
+example.preds <- data.frame(Temp = seq(min(example_fit$Temp), max(example_fit$Temp), length.out = 100))
+example.preds <- subset(example.preds, Temp >= min(example_out$Temp) & Temp <= max(example_out$Temp))
+example.preds <- broom::augment(ratexample, newdata = example.preds)
+
+# plot
+
+ggplot(example.preds) +
+  geom_point(aes(Temp, devRate), data = example_out, alpha = 0.7) +
+  geom_line(aes(Temp, .fitted), col = 'blue', size = 0.5) +
+  theme_bw() +
+  xlab("Temperature (ºC)") +
+  ylab("Growth rate (OD600 nm/min)") +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15))
+```
+
+## Writing out data frame with dropped data values for temperature vs. growth rate
+
+Creating a list of data frames where each data frame is the temp vs. growth rate data for each isolate
+```{r}
+temp_growth_list <- list("example" = example_out, ...)
+```
+
+## Extracting microbial growth traits
+
+From the Ratkowsky 1983 model, we can estimate temperature sensitivity of growth (Ratkowsky parameter), optimum growth temperature, and maximum growth temperature. This is done by extracting model parameters and using functions in the rTPC package.
+
+### Temperature sensitivity of growth
+
+Extracting the Ratkowsky parameter from the Ratkowsky 1983 models
+
+```{r}
+# creating a list of the Ratkowsky 1983 models for each isolate
+ratALL <- list(ratexample, ...) 
+
+a <- lapply(ratALL, function(x) {
+  as.data.frame(coef(x))
+})
+
+#creating a data frame containing the temperature sensitivity for each isolate
+
+a <- t(as.data.frame(a))
+a <- as.data.frame(a[,-c(1, 2, 4)])
+colnames(a) <- "a"
+
+#adding a column with the ID's
+a <- add_column(a, ID = c("example", ...), .before = "a")
+```
+
+### Optimum growth temperature
+
+
+```{r}
+ratALL <- list(ratexample, ...) 
+
+topt <- lapply(ratALL, get_topt)
+
+#creating a data frame containing the temperature sensitivity for each isolate
+
+topt <- t(as.data.frame(topt))
+colnames(topt) <- "topt"
+topt <- as.data.frame(topt)
+
+#adding a column with the ID's
+topt <- add_column(topt, ID = c("example",...), .before = "topt")
+```
+
+### Maximum growth temperature
+
+```{r}
+ratALL <- list(ratexample,...) 
+
+tmax <- lapply(ratALL, function(x) {
+  as.data.frame(coef(x))
+})
+
+#creating a data frame containing the temperature sensitivity for each isolate
+
+tmax <- t(as.data.frame(tmax))
+tmax <- as.data.frame(tmax[,-c(1,3,4)])
+colnames(tmax) <- "tmax"
+
+#adding a column with the ID's
+tmax <- add_column(tmax, ID = c("example",...), .before = "tmax")
+```
+
+## Writing out file with all traits
+
+```{r}
+traits_list <- list(a, topt, tmax)
+traits <- traits_list %>% reduce(full_join, by = 'ID')
+
+origin <- read.csv(".../.../...") # file containing origins of each isolate
+
+traits <- merge(traits, origin)
+
+#dropping X column
+traits <- traits %>% dplyr::select(-one_of(c("X")))
+```
+
+```{r}
+setwd(".../.../...")
+write.table(traits, "...", sep = ",")
+```
+
+## Prepare data to fit mMcromolecular Rate Theory
+
+The Macromolecular Rate Theory is fit on log transformed growth rate over temperature. We want to write out a file with the log transformed growth rates.
+
+Convert the data to be long format
+```{r}
+temp_growth_list <- purrr::map2(temp_growth_list, names(temp_growth_list), ~ mutate(.x, ID = .y))
+
+temp_growth_long <- data_frame(id = seq_along(temp_growth_list), temp_growth_list) %>%
+  unnest(c(temp_growth_list)) %>%
+  group_by(ID) %>%
+  dplyr::select(Temp, devRate, ID)
+```
+
+Preparing the data to fit MMRT by log transforming the growth rates
+```{r}
+temp_growth_long <- mutate(temp_growth_long, ln_r = log2(devRate))
+```
+
+```{r}
+write.table(temp_growth_long, file = "...", sep = ",")
+```
