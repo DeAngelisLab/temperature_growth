@@ -1,0 +1,124 @@
+---
+title: "Modified Macromolecular Rate Theory"
+output: html_document
+date: "26 March, 2023"
+author: "Charlotte J. Alster, ..."
+editor_options: 
+  chunk_output_type: console
+---
+
+The following code fits the modified Macromolecular Rate Theory on data for log transformed growth rate over temperature. The input file is outputted by the model-fitting.Rmd script.
+```{r}
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(broom)
+library(ggplot2)
+```
+
+Reading in the data
+
+```{r}
+setwd(".../.../...")
+temp_growth <- read.csv(".../.../...") # this file is read out from model-fitting.Rmd
+
+# removing -Inf values
+temp_growth <- filter(temp_growth, ln_r != -Inf)
+```
+
+Creating subsetted data frames for each isolate
+
+```{r}
+example_data <- filter(temp_growth, ID == "example")
+```
+
+## MMRT 1.5
+
+The below chunks fit the modified Macromolecular Rate Theory model on one example isolate. Optimum growth temperature (topt) and temperature inflection point (Tinf) are estimated by calculating the first and second derivatives, respectively,
+
+### EXAMPLE ISOLATE
+
+Fitting modified MMRT
+
+```{r}
+# mutating temperature to be in Kelvin if needed
+
+example_data <- example_data %>% mutate("Temp_K" = Temp + 273.15)
+rownames(example_data) <- 1:nrow(example_data)
+```
+
+```{r}
+x <- example_data[,5]
+y <- example_data[,4]
+
+R <- 8.314
+  
+	fit <- nls(y ~ log(x)+23.76-(h/(R*x))-((((a*(x-296.1))+b)*(x-296.1))/(R*x))+(s/R)+((((a*(x-296.1))+b)/R)*(log(x/296.1))),
+		start=list(b=-3000,h=10000,s=-150,a=0),control=nls.control(maxiter=100))
+	# extract the parameters from the fitted model
+	fit.b=coefficients(fit)[[1]]
+	fit.h=coefficients(fit)[[2]]
+	fit.s=coefficients(fit)[[3]]
+	fit.a=coefficients(fit)[[4]]
+	# create a synthetic temperature vector that we use to predict rates with the fitted model
+	xs<-seq(0+273.15, 60+273.15, length.out=10000);
+	# generate rate predictions using this synthetic temperature vector (we also use this to draw the curve in the plot)
+	fit.pred=log(xs)+23.76-(fit.h/(R*xs))-((((fit.a*(xs-296.1))+fit.b)*(xs-296.1))/(R*xs))+
+			(fit.s/R)+((((fit.a*(xs-296.1))+fit.b)/R)*(log(xs/296.1)))
+```
+
+Calculating topt and tinf
+```{r}
+## First derivative for calculation for Topt ##
+
+d <- function(x) {1/x + coef(fit)[2] * R/(R * x)^2 - ((coef(fit)[4] * (x - 296.1) + ((coef(fit)[4] * (x - 296.1)) + coef(fit)[1]))/(R * 
+                                                                                                            x) - (((coef(fit)[4] * (x - 296.1)) + coef(fit)[1]) * (x - 296.1)) * R/(R * x)^2) + (coef(fit)[4]/R * (log(x/296.1)) + (((coef(fit)[4] * (x - 296.1)) + coef(fit)[1])/R) * (1/296.1/(x/296.1)))}
+    
+# plotting the first derivative to identify max/min values
+    
+curve(d, from = min(x), to = max(x)); abline(h = 0, lty = 3)
+    
+# extracting the exact max value
+    
+uniroot(d, lower = 302, upper = 310) # lower and upper bounds are determined through the plots of the derivative
+    
+#TO <- uniroot(d, c(min(x), max(x)))$root
+
+  
+## Second derivative calculation for Tinf ##
+
+d <- function(x) {coef(fit)[4]/R * (1/296.1/(x/296.1)) + (coef(fit)[4]/R * (1/296.1/(x/296.1)) - (((coef(fit)[4] * (x - 296.1)) + coef(fit)[1])/R) *
+
+      (1/296.1 * (1/296.1)/(x/296.1)^2)) - (coef(fit)[2] * R * (2 * (R * (R * x)))/((R * x)^2)^2 + 1/x^2 + ((coef(fit)[4] + coef(fit)[4])/(R * x) -
+
+        (coef(fit)[4] * (x - 296.1) + ((coef(fit)[4] * (x - 296.1)) + coef(fit)[1])) * R/(R * x)^2 - ((coef(fit)[4] * (x - 296.1) + ((coef(fit)[4] * (x - 296.1)) + coef(fit)[1])) * R/(R * x)^2 -
+
+          (((coef(fit)[4] * (x - 296.1)) + coef(fit)[1]) * (x - 296.1)) * R * (2 * (R * (R * x)))/((R * x)^2)^2)))}
+
+# plotting the second derivative to identify max/min values
+
+curve(d, from = min(x), to = max(x)); abline(h = 0, lty = 3)
+    
+TI <- uniroot(d, c(min(x), max(x)), extendInt ="yes")$root
+```
+
+Plotting the fitted modified MMRT with the raw data of log transformed growth rate over temperature
+```{r}
+# creating a data frame with the predicted values
+pred <- data.frame(xs, fit.pred)
+# converting predicted temperature data to ºC
+pred <- pred %>% mutate(Temp = xs - 273.15)
+# subsetting data frame
+pred <- pred %>% filter(Temp <= max(example_data$Temp) &
+                          Temp >= min(example_data$Temp))
+
+# plot
+ggplot() +
+  geom_point(aes(Temp, ln_r), data = example_data, alpha = 0.7) +
+  geom_line(aes(Temp, fit.pred), data = pred, col = 'blue', size = 0.5) +
+  theme_bw() +
+  xlab("Temperature (ºC)") +
+  ylab("ln(growth rate)") +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15))
+```
